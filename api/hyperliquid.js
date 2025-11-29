@@ -12,8 +12,8 @@ const HYPERLIQUID_RPC_URL = "https://api.hyperliquid.xyz/info";
 const COINBASE_API_URL = "https://api.coinbase.com/v2/exchange-rates?currency=USD";
 
 
-// 🚨 IMPORTANT: Replace these mock addresses with the actual wallets you want to track!
-const TRACKED_WALLET_ADDRESSES = [
+// Fallback list of mock addresses (used if leaderboard fetch fails)
+let TRACKED_WALLET_ADDRESSES = [
     "0x000000000000000000000000000000000000d0c1", // Mock Wallet 1
     "0x000000000000000000000000000000000000d0c2", // Mock Wallet 2
     "0x000000000000000000000000000000000000d0c3", // Mock Wallet 3
@@ -94,7 +94,56 @@ module.exports = async (req, res) => {
         // Continue with default prices
     }
 
+    // --- 1.5. Fetch Top 50 Wallet Addresses (via Hyperliquid webData API) ---
+    try {
+        const leaderboardPayload = {
+            method: "webData",
+            params: {
+                type: "global",
+                subType: "all",
+                start: 1,
+                end: 50 // Fetch top 50 wallets
+            },
+            id: 2, // Use a different ID than the position batch
+            jsonrpc: "2.0"
+        };
+        
+        const lbResponse = await fetch(HYPERLIQUID_RPC_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(leaderboardPayload)
+        });
+
+        const lbText = await lbResponse.text();
+        let lbData = null;
+        try { lbData = JSON.parse(lbText); } catch (e) { 
+            console.warn("Hyperliquid leaderboard response was not valid JSON.");
+        }
+
+        if (lbResponse.ok && lbData && lbData.result && Array.isArray(lbData.result.leaderboard)) {
+            // Extract the wallet addresses
+            const fetchedWallets = lbData.result.leaderboard
+                .map(entry => entry.user)
+                .slice(0, 50); // Ensure max 50 addresses
+
+            if (fetchedWallets.length > 0) {
+                TRACKED_WALLET_ADDRESSES = fetchedWallets;
+                console.log(`Successfully fetched ${TRACKED_WALLET_ADDRESSES.length} wallets from the leaderboard.`);
+            } else {
+                 console.warn("Leaderboard fetch succeeded but returned no wallets. Using fallback wallets.");
+            }
+        } else {
+            console.warn("Could not fetch valid leaderboard data from Hyperliquid. Using fallback wallets.");
+        }
+
+    } catch (error) {
+        console.error("Error fetching Hyperliquid Leaderboard:", error.message);
+        console.warn("Using fallback wallets for position tracking.");
+    }
+
+
     // --- 2. Construct the Hyperliquid Position Batch Request ---
+    // Now uses the dynamically updated TRACKED_WALLET_ADDRESSES
     const requestPayload = TRACKED_WALLET_ADDRESSES.map((wallet, index) => ({
         method: "clearinghouseState",
         params: [{ user: wallet }], 
