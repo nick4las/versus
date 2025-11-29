@@ -25,9 +25,10 @@ module.exports = async (req, res) => {
     try {
         // --- 1. Define the external API endpoint and Request Payload (JSON-RPC) ---
         
+        // SWITCHED to allMids endpoint which is simpler and should be less prone to 422 errors.
         const exchangeRequestPayload = {
-            method: "exchangeSnapshot",
-            params: [{ type: "spot" }, ["USDC", "BTC", "ETH"]],
+            method: "allMids",
+            params: [], // allMids takes no parameters
             id: 1,
             jsonrpc: "2.0"
         };
@@ -49,7 +50,6 @@ module.exports = async (req, res) => {
             data = JSON.parse(responseText);
         } catch (parseError) {
             // If JSON parsing fails, the body is likely a non-JSON error string.
-            // We still proceed to the error path if status is not OK.
             console.warn("Could not parse response as JSON. Treating as raw text error.");
         }
 
@@ -71,15 +71,16 @@ module.exports = async (req, res) => {
         
         const assetPrices = {};
 
-        // Process the result to extract current prices
+        // Process the result: data.result is an array of strings [symbol, mid_price]
         if (data && data.result) {
-            data.result.forEach(item => {
-                // Ensure the price is a float
-                assetPrices[item.coin] = parseFloat(item.price);
-            });
+            // The result format is likely: { "ETH": "3500.5", "BTC": "60000.1" }
+            for (const [key, value] of Object.entries(data.result)) {
+                // The keys in allMids result are usually the currency symbols (e.g., "ETH")
+                assetPrices[key] = parseFloat(value);
+            }
         }
         
-        // --- 4. Construct Simulated Data with Live Price Injection ---
+        // --- 4. Construct Data with Live Price Injection ---
         
         // Use live price if available, otherwise fallback to a large number
         const btcPrice = assetPrices['BTC'] || 60000; 
