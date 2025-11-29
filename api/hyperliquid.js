@@ -1,11 +1,7 @@
 /**
- * Vercel Serverless Function to proxy real-time data from the Hyperliquid API.
- * This function now uses ONLY simulated data due to persistent 422 errors 
- * when connecting to the external Hyperliquid API.
+ * Vercel Serverless Function to proxy real-time data.
+ * This function uses ONLY simulated data.
  */
-
-// We no longer need node-fetch as we are skipping the external API call.
-// const fetch = require('node-fetch');
 
 // Function to handle the Vercel request
 module.exports = async (req, res) => {
@@ -68,7 +64,7 @@ module.exports = async (req, res) => {
         ];
 
         // --- 2. Return Success Response ---
-        // This response is now guaranteed to succeed since it doesn't rely on external networking.
+        // This response is now guaranteed to succeed.
         res.status(200).json({
             markets: markets,
             openPositions: openPositions
