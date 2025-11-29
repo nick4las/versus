@@ -96,14 +96,15 @@ module.exports = async (req, res) => {
 
     // --- 1.5. Fetch Top 50 Wallet Addresses (via Hyperliquid webData API) ---
     try {
+        // Updated params from object to array to align with other successful Hyperliquid RPC calls
         const leaderboardPayload = {
             method: "webData",
-            params: {
+            params: [{ // Changed from object to array
                 type: "global",
                 subType: "all",
                 start: 1,
                 end: 50 // Fetch top 50 wallets
-            },
+            }],
             id: 2, // Use a different ID than the position batch
             jsonrpc: "2.0"
         };
@@ -117,7 +118,7 @@ module.exports = async (req, res) => {
         const lbText = await lbResponse.text();
         let lbData = null;
         try { lbData = JSON.parse(lbText); } catch (e) { 
-            console.warn("Hyperliquid leaderboard response was not valid JSON.");
+            console.warn("Hyperliquid leaderboard response was not valid JSON. Raw text:", lbText); // Log raw text on parse failure
         }
 
         if (lbResponse.ok && lbData && lbData.result && Array.isArray(lbData.result.leaderboard)) {
@@ -133,7 +134,7 @@ module.exports = async (req, res) => {
                  console.warn("Leaderboard fetch succeeded but returned no wallets. Using fallback wallets.");
             }
         } else {
-            console.warn("Could not fetch valid leaderboard data from Hyperliquid. Using fallback wallets.");
+            console.warn(`Could not fetch valid leaderboard data from Hyperliquid. Status: ${lbResponse.status}. Using fallback wallets.`);
         }
 
     } catch (error) {
@@ -169,12 +170,12 @@ module.exports = async (req, res) => {
         try {
             data = JSON.parse(responseText);
         } catch (parseError) {
-            console.warn("Hyperliquid response was not valid JSON. Treating as raw text error.");
+            console.warn("Hyperliquid response was not valid JSON. Treating as raw text error. Raw text:", responseText); // Log raw text on parse failure
         }
 
         if (!apiResponse.ok || !Array.isArray(data)) {
             // Handle any failure (non-200 status, or non-array response)
-            console.error(`Hyperliquid API Batch Failed. Status: ${apiResponse.status || 'N/A'}.`);
+            console.error(`Hyperliquid API Batch Failed. Status: ${apiResponse.status || 'N/A'}. Raw Response:`, responseText);
             hyperliquidFetchFailed = true;
         } else {
             // --- Success: Process Batch Response ---
