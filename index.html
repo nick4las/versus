@@ -143,13 +143,24 @@
             renderTradingData();
             const dataErrorElement = document.getElementById('data-error');
             dataErrorElement.textContent = ''; // Clear previous errors
+            
+            const proxyUrl = '/api/hyperliquid'; // The URL being called
 
             try {
-                // Fetch data from the new proxy endpoint defined in api/hyperliquid.js
-                const response = await fetch('/api/hyperliquid');
+                console.log(`[NETWORK] Attempting to fetch data from proxy at: ${proxyUrl}`);
+                const response = await fetch(proxyUrl);
 
                 if (!response.ok) {
-                    throw new Error(`HTTP error! Status: ${response.status}`);
+                    const status = response.status;
+                    const errorText = await response.text();
+                    
+                    console.error(`[NETWORK ERROR] Proxy request failed. Status: ${status}. Response Text:`, errorText);
+                    
+                    // Display the status code for immediate debugging
+                    dataErrorElement.textContent = `CRITICAL ERROR: Failed to fetch live data. Status ${status}. Check console (F12) for network error details.`;
+                    
+                    // Throw to ensure we hit the catch block's error logging
+                    throw new Error(`HTTP error! Status: ${status}`);
                 }
 
                 const liveData = await response.json();
@@ -163,12 +174,17 @@
                 STATE.openPositions = liveData.openPositions || [];
 
             } catch (error) {
-                console.error("Failed to fetch live data via proxy:", error);
-                dataErrorElement.textContent = `Error fetching live data: ${error.message}. Ensure your '/api/hyperliquid' proxy is deployed and running.`;
+                console.error("Failed to fetch live data via proxy (Catch Block Error):", error);
+                
+                // Provide a clearer error message to the user
+                if (dataErrorElement.textContent === '') {
+                     dataErrorElement.textContent = `Critical connection failure. Check console (F12) for detailed network error (e.g., timeout).`;
+                }
+
             } finally {
                 STATE.isDataLoading = false;
                 renderTradingData();
-                console.log("Live Trading Data loaded via proxy.");
+                console.log("Live Trading Data render attempt finished.");
             }
         };
 
@@ -291,16 +307,20 @@
                     <div class="flex flex-col items-center justify-center p-12 card rounded-xl lg:col-span-2">
                         <div class="loading-spinner mb-4"></div>
                         <p class="text-lg font-semibold text-gray-400">Fetching Live Hyperliquid Data via Proxy...</p>
-                        <p class="text-sm text-gray-500">The app is now fetching data from your '/api/hyperliquid' Serverless Function.</p>
+                        <p class="text-sm text-gray-500">The app is now attempting to fetch data from your deployed '/api/hyperliquid' Serverless Function.</p>
                     </div>
                 `;
                 if (mainMarketContainer) mainMarketContainer.innerHTML = loadingHtml;
-                if (dataErrorElement) dataErrorElement.textContent = '';
+                // Keep the error message visible if one already occurred (from response.ok check)
+                if (dataErrorElement && dataErrorElement.textContent === '') dataErrorElement.textContent = ''; 
                 return;
             }
 
-            // Clear loading and error states
-            if (dataErrorElement) dataErrorElement.textContent = '';
+            // Clear loading and error states if data was successfully loaded or a fallback was rendered
+            // The error element is only cleared if the fetch was successful.
+            if (dataErrorElement && !dataErrorElement.textContent.includes("CRITICAL ERROR")) {
+                 dataErrorElement.textContent = '';
+            }
 
             // Render main market
             if (mainMarketContainer) mainMarketContainer.innerHTML = renderMarketCard(STATE.mainMarket, true);
