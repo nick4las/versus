@@ -25,10 +25,9 @@ module.exports = async (req, res) => {
     try {
         // --- 1. Define the external API endpoint and Request Payload (JSON-RPC) ---
         
-        // This is the CORRECT JSON-RPC payload structure to get an exchange snapshot
         const exchangeRequestPayload = {
             method: "exchangeSnapshot",
-            params: [{ type: "spot" }, ["USDC", "BTC", "ETH"]], // Requesting spot prices for key assets
+            params: [{ type: "spot" }, ["USDC", "BTC", "ETH"]],
             id: 1,
             jsonrpc: "2.0"
         };
@@ -41,22 +40,22 @@ module.exports = async (req, res) => {
             body: JSON.stringify(exchangeRequestPayload)
         });
 
+        // CRITICAL FIX: Consume the stream ONCE as text, then handle status and parsing.
+        const responseText = await apiResponse.text();
+        let data = null;
+
+        try {
+            // Attempt to parse the text as JSON
+            data = JSON.parse(responseText);
+        } catch (parseError) {
+            // If JSON parsing fails, the body is likely a non-JSON error string.
+            // We still proceed to the error path if status is not OK.
+            console.warn("Could not parse response as JSON. Treating as raw text error.");
+        }
+
         if (!apiResponse.ok) {
-            let errorDetails = { message: `Upstream API returned status ${apiResponse.status}.` };
+            let errorDetails = data || { raw_response: responseText, message: "Response was not JSON or failed parsing." };
             
-            // FIX: Clone the response only in the error path to safely attempt parsing.
-            const responseClone = apiResponse.clone();
-
-            try {
-                // Attempt to read as JSON using the clone
-                errorDetails = await responseClone.json();
-            } catch (jsonError) {
-                // Fallback to reading as plain text using the clone
-                const textBody = await responseClone.text();
-                errorDetails.raw_response = textBody;
-                errorDetails.message = "Non-JSON response body received from Hyperliquid or JSON parsing failed.";
-            }
-
             console.error(`CRITICAL ERROR: Hyperliquid API failed with status ${apiResponse.status}:`, errorDetails);
             
             // Return a 502 Bad Gateway if the upstream API fails
@@ -68,9 +67,8 @@ module.exports = async (req, res) => {
             return;
         }
 
-        // Response is OK (status 200-299), proceed to parse the expected JSON data
-        // NOTE: We only read the body ONCE here on the success path.
-        const data = await apiResponse.json(); 
+        // --- 3. Success Path (apiResponse.ok is true) ---
+        
         const assetPrices = {};
 
         // Process the result to extract current prices
@@ -81,7 +79,7 @@ module.exports = async (req, res) => {
             });
         }
         
-        // --- 3. Construct Simulated Data with Live Price Injection ---
+        // --- 4. Construct Simulated Data with Live Price Injection ---
         
         // Use live price if available, otherwise fallback to a large number
         const btcPrice = assetPrices['BTC'] || 60000; 
@@ -126,7 +124,7 @@ module.exports = async (req, res) => {
             }
         ];
 
-        // --- 4. Return Success Response ---
+        // --- 5. Return Success Response ---
         
         res.status(200).json({
             markets: markets,
@@ -136,7 +134,7 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error("Serverless Function Execution Error (Catch Block):", error.message);
         
-        // --- 5. Return generic 500 Internal Server Error for unhandled exceptions ---
+        // --- 6. Return generic 500 Internal Server Error for unhandled exceptions ---
         res.status(500).json({
             error: "Internal Server Error during execution.",
             details: error.message
