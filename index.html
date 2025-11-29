@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hyper-Predict Static Data App</title>
+    <title>Hyper-Predict Live Data App (Proxy)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
@@ -45,51 +45,7 @@
         let userId = null;
         let isAuthReady = false;
         
-        // --- STATIC MOCK DATA (Replaces dynamic API calls) ---
-        const MOCK_DATA = {
-            markets: [
-                {
-                    MarketID: "BTC-Q324-PEAK",
-                    Title: "BTC to reach $100,000 before Q4 2024",
-                    CurrentPrice: 65200.50,
-                    OddsYes: 0.35,
-                    OddsNo: 0.65
-                }
-            ],
-            openPositions: [
-                {
-                    Asset: "BTC",
-                    Side: "Long",
-                    SizeUSD: 10000.00,
-                    EntryPrice: 62500.00,
-                    CurrentPrice: 65200.50,
-                    LiquidationPrice: 59800.00,
-                    Margin: 500.00,
-                    UnrealizedPnL: 432.08
-                },
-                {
-                    Asset: "ETH",
-                    Side: "Short",
-                    SizeUSD: 5000.00,
-                    EntryPrice: 3800.00,
-                    CurrentPrice: 3550.90,
-                    LiquidationPrice: 4050.00,
-                    Margin: 250.00,
-                    UnrealizedPnL: 324.50
-                },
-                {
-                    Asset: "SOL",
-                    Side: "Long",
-                    SizeUSD: 2500.00,
-                    EntryPrice: 155.20,
-                    CurrentPrice: 151.00,
-                    LiquidationPrice: 140.50,
-                    Margin: 125.00,
-                    UnrealizedPnL: -83.65
-                }
-            ]
-        };
-
+        // --- STATE MANAGEMENT ---
         const STATE = {
             mainMarket: null,
             openPositions: [],
@@ -177,27 +133,43 @@
             }
         };
 
-        // 3. Static Data Loading (Replaces fetchTradingData)
+        // 3. Live Data Loading (Replaces static mock data)
 
         /**
-         * Loads static mock data instantly and updates the state.
-         * This function replaces the previous Gemini API call.
+         * Fetches live trading data from the Serverless Proxy (Vercel/Netlify endpoint: /api/hyperliquid).
          */
-        const loadStaticTradingData = () => {
+        const loadLiveTradingData = async () => {
             STATE.isDataLoading = true;
-            renderTradingData(); 
-            
-            // Simulate a very short loading delay for UX consistency
-            setTimeout(() => {
-                if (MOCK_DATA.markets.length > 0) {
-                    STATE.mainMarket = MOCK_DATA.markets[0];
+            renderTradingData();
+            const dataErrorElement = document.getElementById('data-error');
+            dataErrorElement.textContent = ''; // Clear previous errors
+
+            try {
+                // Fetch data from the new proxy endpoint defined in api/hyperliquid.js
+                const response = await fetch('/api/hyperliquid');
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
                 }
-                STATE.openPositions = MOCK_DATA.openPositions;
+
+                const liveData = await response.json();
                 
+                // Assuming the proxy returns data matching the required structure:
+                // { markets: [{...}], openPositions: [{...}] }
+                
+                if (liveData.markets && liveData.markets.length > 0) {
+                    STATE.mainMarket = liveData.markets[0];
+                }
+                STATE.openPositions = liveData.openPositions || [];
+
+            } catch (error) {
+                console.error("Failed to fetch live data via proxy:", error);
+                dataErrorElement.textContent = `Error fetching live data: ${error.message}. Ensure your '/api/hyperliquid' proxy is deployed and running.`;
+            } finally {
                 STATE.isDataLoading = false;
                 renderTradingData();
-                console.log("Static Trading Data loaded.");
-            }, 300); 
+                console.log("Live Trading Data loaded via proxy.");
+            }
         };
 
         // 4. UI Formatting and Rendering Functions
@@ -280,12 +252,13 @@
         const renderMarketCard = (market, isMain = false) => {
             if (!market) return '';
 
+            // Note: CurrentPrice is now fetched live from the proxy, and used here.
             const marketHtml = `
                 <div class="card p-6 rounded-xl shadow-lg mb-6">
                     <div class="flex justify-between items-start">
                         <div>
                             <h2 class="text-xl md:text-2xl font-bold text-white mb-1">${market.Title}</h2>
-                            <p class="text-sm text-gray-400">Current Price (Static): <span class="font-mono text-base text-white">${formatPrice(market.CurrentPrice)}</span></p>
+                            <p class="text-sm text-gray-400">Current Price (Live): <span class="font-mono text-base text-white">${formatPrice(market.CurrentPrice)}</span></p>
                         </div>
                         <span class="text-xs font-mono text-gray-500">Market ID: ${market.MarketID}</span>
                     </div>
@@ -317,8 +290,8 @@
                 const loadingHtml = `
                     <div class="flex flex-col items-center justify-center p-12 card rounded-xl lg:col-span-2">
                         <div class="loading-spinner mb-4"></div>
-                        <p class="text-lg font-semibold text-gray-400">Loading Static Hyperliquid Data Mock...</p>
-                        <p class="text-sm text-gray-500">Loading local mock data to bypass network restrictions.</p>
+                        <p class="text-lg font-semibold text-gray-400">Fetching Live Hyperliquid Data via Proxy...</p>
+                        <p class="text-sm text-gray-500">The app is now fetching data from your '/api/hyperliquid' Serverless Function.</p>
                     </div>
                 `;
                 if (mainMarketContainer) mainMarketContainer.innerHTML = loadingHtml;
@@ -337,9 +310,9 @@
         };
 
         const renderGroundingSources = (sources) => {
-             // Removed source display as Gemini is no longer used.
+             // Not needed for Hyperliquid proxy data
              const sourcesContainer = document.getElementById('grounding-sources');
-             if (sourcesContainer) sourcesContainer.innerHTML = '<p class="text-xs text-gray-600 mt-4">Data is static mock data, not live.</p>';
+             if (sourcesContainer) sourcesContainer.innerHTML = '<p class="text-xs text-gray-600 mt-4">Data is being fetched live via your Serverless Proxy.</p>';
         }
 
 
@@ -388,10 +361,10 @@
         // 6. Initialization
         window.onload = function() {
             // Initiate the data load when the page loads
-            loadStaticTradingData();
+            loadLiveTradingData();
 
             // Set up a refresh button listener to reload the static data
-            document.getElementById('refresh-btn').addEventListener('click', loadStaticTradingData);
+            document.getElementById('refresh-btn').addEventListener('click', loadLiveTradingData);
         };
 
         // Export functions to global scope for HTML event handlers
@@ -401,8 +374,8 @@
     <!-- Main Application Layout -->
     <div class="max-w-6xl mx-auto">
         <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-green-400">Hyper-Predict <span class="text-white">Static Data Mock</span></h1>
-            <p class="text-gray-400 mt-2">Displaying Hyperliquid-style Open Positions using local mock data.</p>
+            <h1 class="text-4xl font-extrabold text-green-400">Hyper-Predict <span class="text-white">Live Data via Proxy</span></h1>
+            <p class="text-gray-400 mt-2">Displaying Hyperliquid-style Open Positions using a Serverless Proxy.</p>
             <p class="text-gray-500 text-xs mt-1">Wallet (Simulated): <span id="user-id-display" class="font-mono">Loading...</span></p>
         </header>
 
@@ -412,7 +385,7 @@
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2" viewBox="0 0 20 20" fill="currentColor">
                     <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0110.803 6.096 1.5 1.5 0 001.523 1.346c.866-.192 1.532-1.168 1.532-2.147A9 9 0 103 9a1 1 0 01-2 0 11 11 0 011.08-4.707 1 1 0 01.442-.442A11 11 0 019 1h1a1 1 0 110 2H9c-3.133 0-6.095 1.252-8.239 3.396a1 1 0 01-1.414-1.414A9 9 0 0110 0a10 10 0 019 10 10 10 0 01-10 10 10 10 0 01-10-10 1 1 0 012 0 8 8 0 0014 0 8 8 0 00-8-8z" clip-rule="evenodd" />
                 </svg>
-                Reload Static Data
+                Reload Live Data
             </button>
             <p id="data-error" class="text-red-400 text-sm"></p>
         </div>
@@ -423,7 +396,7 @@
             <div class="card p-4 rounded-xl shadow-lg">
                 <div id="open-positions-container">
                     <!-- Dynamic Positions Table Loaded Here -->
-                    <p class="text-gray-500 italic p-4 text-center">Loading open positions...</p>
+                    <p class="text-gray-500 italic p-4 text-center">Loading live open positions...</p>
                 </div>
             </div>
         </div>
@@ -431,7 +404,7 @@
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <!-- Main Market (Column 1 & 2) -->
             <div class="lg:col-span-2">
-                <h2 class="text-2xl font-semibold mb-4 text-white">Featured Prediction Market (Static)</h2>
+                <h2 class="text-2xl font-semibold mb-4 text-white">Featured Prediction Market (Live Price)</h2>
                 <div id="main-market-container">
                     <!-- Dynamic Content Loaded Here -->
                 </div>
@@ -450,7 +423,7 @@
 
         <!-- Grounding Sources -->
         <div id="grounding-sources" class="mt-8 p-4 text-center card rounded-xl">
-             <p class="text-xs text-gray-600 mt-4">Data is static mock data, not live.</p>
+             <p class="text-xs text-gray-600 mt-4">Data is being fetched live via your Serverless Proxy.</p>
         </div>
     </div>
 
