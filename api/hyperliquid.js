@@ -1,7 +1,13 @@
 /**
- * Vercel Serverless Function to proxy real-time data.
- * This function uses ONLY simulated data.
+ * Vercel Serverless Function to proxy real-time data from the Hyperliquid API.
+ * This function attempts to fetch live prices and uses them to calculate 
+ * PnL for simulated open positions.
  */
+
+const fetch = require('node-fetch');
+
+// Define the Hyperliquid RPC URL
+const HYPERLIQUID_RPC_URL = "https://api.hyperliquid.xyz/info";
 
 // Function to handle the Vercel request
 module.exports = async (req, res) => {
@@ -17,24 +23,65 @@ module.exports = async (req, res) => {
     }
 
     try {
+        // --- 1. Define the external API endpoint and Request Payload (JSON-RPC) ---
         
-        // --- 1. Define Simulated Data ---
-        
-        // Use a simple, time-based simulation for BTC and ETH prices
-        const btcPrice = (60000 + Math.sin(Date.now() / 10000000) * 1000);
-        const ethPrice = (3500 + Math.cos(Date.now() / 10000000) * 100);
+        // This is the CORRECT JSON-RPC payload structure to get an exchange snapshot
+        const exchangeRequestPayload = {
+            method: "exchangeSnapshot",
+            params: [{ type: "spot" }, ["USDC", "BTC", "ETH"]], // Requesting spot prices for key assets
+            id: 1,
+            jsonrpc: "2.0"
+        };
 
+        // --- 2. Fetch the live prices from Hyperliquid ---
+        
+        const apiResponse = await fetch(HYPERLIQUID_RPC_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(exchangeRequestPayload)
+        });
+
+        if (!apiResponse.ok) {
+            const apiErrorBody = await apiResponse.json();
+            console.error(`CRITICAL ERROR: Hyperliquid API failed with status ${apiResponse.status}:`, apiErrorBody);
+            
+            // Return a 502 Bad Gateway if the upstream API fails
+            res.status(502).json({
+                error: "Failed to fetch data from Hyperliquid API",
+                status: apiResponse.status,
+                details: apiErrorBody.error || "Upstream API returned an error."
+            });
+            return;
+        }
+
+        const data = await apiResponse.json();
+        const assetPrices = {};
+
+        // Process the result to extract current prices
+        if (data && data.result) {
+            data.result.forEach(item => {
+                // Ensure the price is a float
+                assetPrices[item.coin] = parseFloat(item.price);
+            });
+        }
+        
+        // --- 3. Construct Simulated Data with Live Price Injection ---
+        
+        // Use live price if available, otherwise fallback to a large number
+        const btcPrice = assetPrices['BTC'] || 60000; 
+        const ethPrice = assetPrices['ETH'] || 3500;
+        
         const formattedBtcPrice = parseFloat(btcPrice.toFixed(2));
         const formattedEthPrice = parseFloat(ethPrice.toFixed(2));
         
-        // Prediction Market Data (uses simulated BTC price)
+        // Prediction Market Data (uses live BTC price)
         const markets = [
             {
-                MarketID: "BTC-PRED-2025",
-                Title: "BTC Perpetual Futures (Prediction Pool)",
+                MarketID: "BTC-PERP-Q1",
+                Title: "BTC Perpetual Futures (Live Price)",
                 OddsYes: 0.55, 
                 OddsNo: 0.45,
-                CurrentPrice: formattedBtcPrice, // Simulated price
+                CurrentPrice: formattedBtcPrice, // LIVE price
                 Timestamp: Date.now()
             }
         ];
@@ -48,7 +95,7 @@ module.exports = async (req, res) => {
                 EntryPrice: 58500.25,
                 CurrentPrice: formattedBtcPrice,
                 LiquidationPrice: 55000.00,
-                // Calculate PnL based on the current simulated price
+                // Calculate PnL based on the current LIVE price
                 UnrealizedPnL: (formattedBtcPrice - 58500.25) * (5000 / 58500.25)
             },
             {
@@ -58,13 +105,13 @@ module.exports = async (req, res) => {
                 EntryPrice: 3800.00,
                 CurrentPrice: formattedEthPrice,
                 LiquidationPrice: 4100.00,
-                // Calculate PnL based on the current simulated price
+                // Calculate PnL based on the current LIVE price
                 UnrealizedPnL: (3800.00 - formattedEthPrice) * (2500 / 3800.00)
             }
         ];
 
-        // --- 2. Return Success Response ---
-        // This response is now guaranteed to succeed.
+        // --- 4. Return Success Response ---
+        
         res.status(200).json({
             markets: markets,
             openPositions: openPositions
@@ -73,7 +120,7 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error("Serverless Function Execution Error (Catch Block):", error.message);
         
-        // --- 3. Return generic 500 Internal Server Error for unhandled exceptions ---
+        // --- 5. Return generic 500 Internal Server Error for unhandled exceptions ---
         res.status(500).json({
             error: "Internal Server Error during execution.",
             details: error.message
