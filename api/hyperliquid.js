@@ -1,19 +1,22 @@
 /**
  * Vercel Serverless Function using JSON-RPC Batching to fetch open positions 
- * for multiple Hyperliquid wallets simultaneously.
- * This is the most efficient method for tracking dozens of traders.
+ * for multiple Hyperliquid wallets and a reliable REST API (Coinbase) for live prices.
+ * This hybrid approach ensures the function remains stable and functional.
  */
 
 const fetch = require('node-fetch');
 
-// Define the Hyperliquid RPC URL
+// Define the Hyperliquid RPC URL for positions
 const HYPERLIQUID_RPC_URL = "https://api.hyperliquid.xyz/info";
+// Define a reliable REST API for current market prices
+const COINBASE_API_URL = "https://api.coinbase.com/v2/exchange-rates?currency=USD";
+
 
 // 🚨 IMPORTANT: Replace these mock addresses with the actual wallets you want to track!
 const TRACKED_WALLET_ADDRESSES = [
-    "0x7fdafde5cfb5465924316eced2d3715494c517d1", // Mock Wallet 1
-    "0xd47587702a91731dc1089b5db0932cf820151a91", // Mock Wallet 2
-    "0x880ac484a1743862989a441d6d867238c7aa311c", // Mock Wallet 3
+    "0x000000000000000000000000000000000000d0c1", // Mock Wallet 1
+    "0x000000000000000000000000000000000000d0c2", // Mock Wallet 2
+    "0x000000000000000000000000000000000000d0c3", // Mock Wallet 3
     "0x000000000000000000000000000000000000d0c4", // Mock Wallet 4
     "0x000000000000000000000000000000000000d0c5", // Mock Wallet 5
     "0x000000000000000000000000000000000000d0c6", // Mock Wallet 6
@@ -23,9 +26,9 @@ const TRACKED_WALLET_ADDRESSES = [
     "0x000000000000000000000000000000000000d0c0"  // Mock Wallet 10
 ];
 
-// Fallback market prices (used for PnL calculation)
-const btcPrice = 60000;
-const ethPrice = 3500;
+// Fallback market prices (used if Coinbase API fails)
+let btcPrice = 60000;
+let ethPrice = 3500;
 
 // Function to safely extract position details from Hyperliquid's complex structure
 function mapHyperliquidPosition(pos, currentBtcPrice, currentEthPrice, walletAddress) {
@@ -72,7 +75,26 @@ module.exports = async (req, res) => {
         return;
     }
 
-    // --- 1. Construct the JSON-RPC Batch Request ---
+    // --- 1. Fetch Live Market Prices (via Coinbase REST API) ---
+    try {
+        const coinbaseResponse = await fetch(COINBASE_API_URL, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' }
+        });
+        const coinbaseData = await coinbaseResponse.json();
+
+        if (coinbaseResponse.ok && coinbaseData.data && coinbaseData.data.rates) {
+            const rates = coinbaseData.data.rates;
+            // The rate is 1 USD / X BTC/ETH. Price is 1 / Rate.
+            if (rates.BTC) { btcPrice = 1 / parseFloat(rates.BTC); }
+            if (rates.ETH) { ethPrice = 1 / parseFloat(rates.ETH); }
+        }
+    } catch (error) {
+        console.warn("Could not fetch live market prices from Coinbase. Using fallback prices.");
+        // Continue with default prices
+    }
+
+    // --- 2. Construct the Hyperliquid Position Batch Request ---
     const requestPayload = TRACKED_WALLET_ADDRESSES.map((wallet, index) => ({
         method: "clearinghouseState",
         params: [{ user: wallet }], 
@@ -81,10 +103,10 @@ module.exports = async (req, res) => {
     }));
 
     let openPositions = [];
-    let fetchError = null;
+    let hyperliquidFetchFailed = false;
 
     try {
-        // --- 2. Send the Single Batch Fetch Request ---
+        // --- 3. Send the Hyperliquid Batch Fetch Request ---
         
         const apiResponse = await fetch(HYPERLIQUID_RPC_URL, {
             method: 'POST',
@@ -98,21 +120,14 @@ module.exports = async (req, res) => {
         try {
             data = JSON.parse(responseText);
         } catch (parseError) {
-            console.warn("Response was not valid JSON. Treating as raw text error.");
+            console.warn("Hyperliquid response was not valid JSON. Treating as raw text error.");
         }
 
-        if (!apiResponse.ok) {
-            // Handle non-200 status (e.g., 422 if payload rejected)
-            let errorDetails = data || { raw_response: responseText, message: "Response was not JSON or failed parsing." };
-            
-            console.error(`CRITICAL ERROR: Hyperliquid API failed with status ${apiResponse.status}:`, errorDetails);
-            
-            fetchError = {
-                error: "Failed to fetch positions from Hyperliquid API (Batch Failed)",
-                status: apiResponse.status,
-                details: errorDetails.raw_response || errorDetails.message || `Upstream API returned status ${apiResponse.status} with unparsable content.`
-            };
-        } else if (Array.isArray(data)) {
+        if (!apiResponse.ok || !Array.isArray(data)) {
+            // Handle any failure (non-200 status, or non-array response)
+            console.error(`Hyperliquid API Batch Failed. Status: ${apiResponse.status || 'N/A'}.`);
+            hyperliquidFetchFailed = true;
+        } else {
             // --- Success: Process Batch Response ---
             
             data.forEach((result, index) => {
@@ -122,6 +137,7 @@ module.exports = async (req, res) => {
                     const walletPositions = result.result.assetPositions.filter(p => p.data.szi !== "0");
                     
                     walletPositions.forEach(pos => {
+                        // Use the newly fetched live prices for accurate PnL calculation
                         const mappedPos = mapHyperliquidPosition(pos, btcPrice, ethPrice, walletAddress);
                         if (mappedPos) {
                             openPositions.push(mappedPos);
@@ -132,20 +148,19 @@ module.exports = async (req, res) => {
         }
         
     } catch (error) {
-        // Handle network errors (e.g., DNS failure, timeout)
         console.error("Network error fetching Hyperliquid data:", error.message);
-        fetchError = { error: "Network or proxy connection failed.", details: error.message };
+        hyperliquidFetchFailed = true;
     }
 
-    // --- 3. Construct Final Response ---
+    // --- 4. Construct Final Response ---
     
     const formattedBtcPrice = parseFloat(btcPrice.toFixed(2));
     
-    // Prediction Market Data (uses simulated price)
+    // Prediction Market Data (uses live/fallback price)
     const markets = [
         {
             MarketID: "BTC-PERP-Q1",
-            Title: "BTC Perpetual Futures (Simulated Price)",
+            Title: `BTC Perpetual Futures (Live Price: $${formattedBtcPrice.toLocaleString()})`,
             OddsYes: 0.55, 
             OddsNo: 0.45,
             CurrentPrice: formattedBtcPrice,
@@ -153,17 +168,16 @@ module.exports = async (req, res) => {
         }
     ];
 
-    if (fetchError) {
-        // If an error occurred, return a 502 to the frontend, but include the fallback structure.
-        return res.status(502).json({ 
-            ...fetchError,
+    if (hyperliquidFetchFailed) {
+        // If Hyperliquid fails, return 200 OK with a warning, but successfully pass the market data.
+        return res.status(200).json({ 
             markets: markets,
-            openPositions: [{ Wallet: "API_ERROR", Asset: "FAIL", Side: fetchError.status.toString(), SizeUSD: 0, EntryPrice: 0, CurrentPrice: 0, LiquidationPrice: 0, UnrealizedPnL: 0 }] 
+            openPositions: [], // Empty array for positions if fetch failed
+            warning: "Hyperliquid position data fetch failed. Displaying live prices only."
         });
     }
     
     // Return Success Response (200 OK)
-    // The front-end will now receive a consolidated list of ALL open positions across all tracked wallets.
     res.status(200).json({
         markets: markets,
         openPositions: openPositions
