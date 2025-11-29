@@ -41,24 +41,20 @@ module.exports = async (req, res) => {
             body: JSON.stringify(exchangeRequestPayload)
         });
 
-        // FIX: Always clone the response immediately after fetching. 
-        // We will use the clone for ALL body reads (error and success paths).
-        const responseClone = apiResponse.clone();
-
         if (!apiResponse.ok) {
-            let errorDetails = {};
+            let errorDetails = { message: `Upstream API returned status ${apiResponse.status}.` };
             
-            // CRITICAL FIX: Safely attempt to parse the error body from the CLONE.
+            // FIX: Clone the response only in the error path to safely attempt parsing.
+            const responseClone = apiResponse.clone();
+
             try {
                 // Attempt to read as JSON using the clone
                 errorDetails = await responseClone.json();
             } catch (jsonError) {
                 // Fallback to reading as plain text using the clone
                 const textBody = await responseClone.text();
-                errorDetails = { 
-                    message: "Non-JSON response body received from Hyperliquid.", 
-                    raw_response: textBody 
-                };
+                errorDetails.raw_response = textBody;
+                errorDetails.message = "Non-JSON response body received from Hyperliquid or JSON parsing failed.";
             }
 
             console.error(`CRITICAL ERROR: Hyperliquid API failed with status ${apiResponse.status}:`, errorDetails);
@@ -67,14 +63,14 @@ module.exports = async (req, res) => {
             res.status(502).json({
                 error: "Failed to fetch data from Hyperliquid API",
                 status: apiResponse.status,
-                details: errorDetails.raw_response || errorDetails.message || "Upstream API returned an unparsable error."
+                details: errorDetails.raw_response || errorDetails.message || `Upstream API returned status ${apiResponse.status} with unparsable content.`
             });
             return;
         }
 
         // Response is OK (status 200-299), proceed to parse the expected JSON data
-        // IMPORTANT: Use the CLONE to read the body on the success path too!
-        const data = await responseClone.json(); 
+        // NOTE: We only read the body ONCE here on the success path.
+        const data = await apiResponse.json(); 
         const assetPrices = {};
 
         // Process the result to extract current prices
