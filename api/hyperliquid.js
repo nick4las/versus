@@ -43,16 +43,16 @@ module.exports = async (req, res) => {
 
         if (!apiResponse.ok) {
             let errorDetails = {};
+            // FIX: Clone the response to safely attempt parsing the body multiple times
+            const responseClone = apiResponse.clone();
             
             // CRITICAL FIX: Safely attempt to parse the error body.
-            // If the Hyperliquid API sends a non-JSON error (e.g., plain text), 
-            // the .json() call will crash. We catch that error and read it as text.
             try {
-                // Attempt to read as JSON
-                errorDetails = await apiResponse.json();
+                // Attempt to read as JSON using the clone
+                errorDetails = await responseClone.json();
             } catch (jsonError) {
-                // Fallback to reading as plain text
-                const textBody = await apiResponse.text();
+                // Fallback to reading as plain text using the clone
+                const textBody = await responseClone.text();
                 errorDetails = { 
                     message: "Non-JSON response body received from Hyperliquid.", 
                     raw_response: textBody 
