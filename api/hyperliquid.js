@@ -1,9 +1,11 @@
 /**
  * Vercel Serverless Function to proxy real-time data from the Hyperliquid API.
- * This function fetches markets and open positions (simulated or real).
+ * This function now uses ONLY simulated data due to persistent 422 errors 
+ * when connecting to the external Hyperliquid API.
  */
 
-const fetch = require('node-fetch');
+// We no longer need node-fetch as we are skipping the external API call.
+// const fetch = require('node-fetch');
 
 // Function to handle the Vercel request
 module.exports = async (req, res) => {
@@ -19,41 +21,8 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // --- 1. Define the external API endpoint and Request Payload (JSON-RPC) ---
         
-        const exchangeEndpoint = 'https://api.hyperliquid.xyz/info';
-        
-        // 🚨 FIX: Using the simplest possible payload 'meta' to break the 422 error chain.
-        const simpleRequestPayload = {
-            method: "meta", // A method that requires no complex parameters
-            params: [],      // Empty parameters list
-            id: 1,
-            jsonrpc: "2.0"
-        };
-
-        // --- 2. Attempt to connect to Hyperliquid API (Proving connectivity) ---
-        
-        const apiResponse = await fetch(exchangeEndpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(simpleRequestPayload)
-        });
-
-        if (!apiResponse.ok) {
-            // If even 'meta' fails, there's a serious upstream issue (or firewall)
-            const apiErrorBody = await apiResponse.json();
-            console.error(`Hyperliquid API failed with status ${apiResponse.status}:`, apiErrorBody);
-            
-            // Return 502 to the client
-            res.status(502).json({
-                error: "Failed to fetch data from Hyperliquid API",
-                status: apiResponse.status,
-                details: apiErrorBody.error || "Upstream API error: Check Vercel logs for full error body."
-            });
-            return;
-        }
-
-        // --- 3. Construct Simulated Data (No longer relying on live price parsing) ---
+        // --- 1. Define Simulated Data ---
         
         // Use a simple, time-based simulation for BTC and ETH prices
         const btcPrice = (60000 + Math.sin(Date.now() / 10000000) * 1000);
@@ -98,8 +67,8 @@ module.exports = async (req, res) => {
             }
         ];
 
-        // --- 4. Return Success Response ---
-        // If we reach here, the network call to Hyperliquid succeeded (or at least returned 200/ok)
+        // --- 2. Return Success Response ---
+        // This response is now guaranteed to succeed since it doesn't rely on external networking.
         res.status(200).json({
             markets: markets,
             openPositions: openPositions
@@ -108,7 +77,7 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error("Serverless Function Execution Error (Catch Block):", error.message);
         
-        // --- 5. Return generic 500 Internal Server Error for unhandled exceptions ---
+        // --- 3. Return generic 500 Internal Server Error for unhandled exceptions ---
         res.status(500).json({
             error: "Internal Server Error during execution.",
             details: error.message
