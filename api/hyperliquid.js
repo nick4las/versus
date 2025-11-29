@@ -41,12 +41,14 @@ module.exports = async (req, res) => {
             body: JSON.stringify(exchangeRequestPayload)
         });
 
+        // FIX: Always clone the response immediately after fetching. 
+        // We will use the clone for ALL body reads (error and success paths).
+        const responseClone = apiResponse.clone();
+
         if (!apiResponse.ok) {
             let errorDetails = {};
-            // FIX: Clone the response to safely attempt parsing the body multiple times
-            const responseClone = apiResponse.clone();
             
-            // CRITICAL FIX: Safely attempt to parse the error body.
+            // CRITICAL FIX: Safely attempt to parse the error body from the CLONE.
             try {
                 // Attempt to read as JSON using the clone
                 errorDetails = await responseClone.json();
@@ -71,7 +73,8 @@ module.exports = async (req, res) => {
         }
 
         // Response is OK (status 200-299), proceed to parse the expected JSON data
-        const data = await apiResponse.json();
+        // IMPORTANT: Use the CLONE to read the body on the success path too!
+        const data = await responseClone.json(); 
         const assetPrices = {};
 
         // Process the result to extract current prices
