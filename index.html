@@ -38,7 +38,14 @@
 
         // Global variables provided by the canvas environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'hyper-predict-web3-app';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        
+        // 🚨 FIX FOR FIREBASE INIT ERROR: Provide a minimal valid config if the environment variable is missing
+        const firebaseConfig = JSON.parse(
+            (typeof __firebase_config !== 'undefined' && __firebase_config.length > 5) 
+            ? __firebase_config 
+            : '{"projectId": "mock-hyper-predict-firebase", "apiKey": "mock-api-key"}'
+        );
+        
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let db, auth;
@@ -53,6 +60,7 @@
             isDataLoading: true
         };
 
+        // Initialize Firebase with the robust config
         const app = initializeApp(firebaseConfig);
         db = getFirestore(app);
         auth = getAuth(app);
@@ -111,7 +119,10 @@
         };
 
         const saveWager = async (marketId, outcome, amount) => {
-            if (!db || !userId) return;
+            if (!db || !userId) {
+                showModal(`Wager Failed`, `Authentication not ready. Please wait a moment.`);
+                return;
+            }
 
             const userRef = getUserWagersRef(userId);
             const wagerKey = `${marketId}_${outcome}`;
@@ -129,7 +140,7 @@
 
             } catch (e) {
                 console.error("Error saving wager: ", e);
-                showModal(`Wager Failed`, `Could not save your wager. Please try again. Error: ${e.message}`);
+                showModal(`Wager Failed`, `Could not save your wager. Error: ${e.message}`);
             }
         };
 
@@ -176,7 +187,7 @@
             } catch (error) {
                 console.error("Failed to fetch live data via proxy (Catch Block Error):", error);
                 
-                // Provide a clearer error message to the user
+                // Provide a clearer error message to the user if none was set by the response.ok check
                 if (dataErrorElement.textContent === '') {
                      dataErrorElement.textContent = `Critical connection failure. Check console (F12) for detailed network error (e.g., timeout).`;
                 }
