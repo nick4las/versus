@@ -1,0 +1,12 @@
+{
+  "name": "hyper-predict-proxy",
+  "version": "1.0.0",
+  "description": "Serverless function for Hyperliquid data proxy.",
+  "main": "index.html",
+  "scripts": {
+    "start": "echo 'Run the frontend and API locally.'"
+  },
+  "dependencies": {
+    "node-fetch": "2.6.7" 
+  }
+}
