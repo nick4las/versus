@@ -1,7 +1,7 @@
 /**
- * Vercel Serverless Function to proxy real-time data from the Hyperliquid API.
- * This function attempts to fetch live prices and uses them to calculate 
- * PnL for simulated open positions.
+ * Vercel Serverless Function using JSON-RPC Batching to fetch open positions 
+ * for multiple Hyperliquid wallets simultaneously.
+ * This is the most efficient method for tracking dozens of traders.
  */
 
 const fetch = require('node-fetch');
@@ -9,147 +9,163 @@ const fetch = require('node-fetch');
 // Define the Hyperliquid RPC URL
 const HYPERLIQUID_RPC_URL = "https://api.hyperliquid.xyz/info";
 
+// 🚨 IMPORTANT: Replace these mock addresses with the actual wallets you want to track!
+const TRACKED_WALLET_ADDRESSES = [
+    "0x7fdafde5cfb5465924316eced2d3715494c517d1", // Mock Wallet 1
+    "0xd47587702a91731dc1089b5db0932cf820151a91", // Mock Wallet 2
+    "0x880ac484a1743862989a441d6d867238c7aa311c", // Mock Wallet 3
+    "0x000000000000000000000000000000000000d0c4", // Mock Wallet 4
+    "0x000000000000000000000000000000000000d0c5", // Mock Wallet 5
+    "0x000000000000000000000000000000000000d0c6", // Mock Wallet 6
+    "0x000000000000000000000000000000000000d0c7", // Mock Wallet 7
+    "0x000000000000000000000000000000000000d0c8", // Mock Wallet 8
+    "0x000000000000000000000000000000000000d0c9", // Mock Wallet 9
+    "0x000000000000000000000000000000000000d0c0"  // Mock Wallet 10
+];
+
+// Fallback market prices (used for PnL calculation)
+const btcPrice = 60000;
+const ethPrice = 3500;
+
+// Function to safely extract position details from Hyperliquid's complex structure
+function mapHyperliquidPosition(pos, currentBtcPrice, currentEthPrice, walletAddress) {
+    const asset = pos.data.asset;
+    const isLong = pos.data.s === 'long';
+    const entryPrice = parseFloat(pos.data.entryPx);
+    const liquidationPrice = parseFloat(pos.data.liquidationPx);
+    const size = parseFloat(pos.data.szi);
+    const currentPrice = (asset === 1) ? currentBtcPrice : currentEthPrice; // 1 is BTC, 2 is ETH
+
+    // Skip if size is zero or near zero
+    if (size < 0.001) return null; 
+
+    // Calculate Unrealized PnL
+    let unrealizedPnL = 0;
+    if (isLong) {
+        unrealizedPnL = (currentPrice - entryPrice) * size;
+    } else {
+        unrealizedPnL = (entryPrice - currentPrice) * size;
+    }
+
+    return {
+        Wallet: walletAddress, // New field to identify the trader
+        Asset: asset === 1 ? "BTC" : "ETH",
+        Side: isLong ? "Long" : "Short",
+        SizeUSD: size * entryPrice, // Approximated size in USD at entry
+        EntryPrice: entryPrice,
+        CurrentPrice: currentPrice,
+        LiquidationPrice: liquidationPrice,
+        UnrealizedPnL: parseFloat(unrealizedPnL.toFixed(2))
+    };
+}
+
+
 // Function to handle the Vercel request
 module.exports = async (req, res) => {
-    // Set CORS headers for security
+    // Set CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     
-    // Handle pre-flight (OPTIONS) request
     if (req.method === 'OPTIONS') {
         res.status(200).end();
         return;
     }
 
-    try {
-        // --- 1. Define the external API endpoint and Request Payload (JSON-RPC) ---
-        
-        // REVERTING to the expected empty array for 'params' for the "meta" method.
-        const exchangeRequestPayload = {
-            method: "meta",
-            params: [], // Using an empty array instead of an empty object
-            id: 1,
-            jsonrpc: "2.0"
-        };
+    // --- 1. Construct the JSON-RPC Batch Request ---
+    const requestPayload = TRACKED_WALLET_ADDRESSES.map((wallet, index) => ({
+        method: "clearinghouseState",
+        params: [{ user: wallet }], 
+        id: index + 1, // Unique ID for each request in the batch
+        jsonrpc: "2.0"
+    }));
 
-        // --- 2. Fetch the live prices from Hyperliquid ---
+    let openPositions = [];
+    let fetchError = null;
+
+    try {
+        // --- 2. Send the Single Batch Fetch Request ---
         
         const apiResponse = await fetch(HYPERLIQUID_RPC_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(exchangeRequestPayload)
+            body: JSON.stringify(requestPayload)
         });
 
-        // CRITICAL FIX: Consume the stream ONCE as text, then handle status and parsing.
         const responseText = await apiResponse.text();
         let data = null;
 
         try {
-            // Attempt to parse the text as JSON
             data = JSON.parse(responseText);
         } catch (parseError) {
-            // If JSON parsing fails, the body is likely a non-JSON error string.
-            console.warn("Could not parse response as JSON. Treating as raw text error.");
+            console.warn("Response was not valid JSON. Treating as raw text error.");
         }
 
         if (!apiResponse.ok) {
+            // Handle non-200 status (e.g., 422 if payload rejected)
             let errorDetails = data || { raw_response: responseText, message: "Response was not JSON or failed parsing." };
             
             console.error(`CRITICAL ERROR: Hyperliquid API failed with status ${apiResponse.status}:`, errorDetails);
             
-            // Return a 502 Bad Gateway if the upstream API fails
-            res.status(502).json({
-                error: "Failed to fetch data from Hyperliquid API",
+            fetchError = {
+                error: "Failed to fetch positions from Hyperliquid API (Batch Failed)",
                 status: apiResponse.status,
                 details: errorDetails.raw_response || errorDetails.message || `Upstream API returned status ${apiResponse.status} with unparsable content.`
-            });
-            return;
-        }
-
-        // --- 3. Success Path (apiResponse.ok is true) ---
-        
-        const assetPrices = {};
-        let marketsList = [];
-
-        // Processing the 'meta' response (it returns market metadata, not prices directly)
-        if (data && data.result && data.result.universe) {
-            // We successfully connected and got market data, but we still need to set prices.
+            };
+        } else if (Array.isArray(data)) {
+            // --- Success: Process Batch Response ---
             
-            // The API worked! Now we fall back to a dynamic simulation using dynamic symbols
-            const btcSymbol = data.result.universe.find(m => m.name === 'BTC') ? 'BTC' : null;
-            const ethSymbol = data.result.universe.find(m => m.name === 'ETH') ? 'ETH' : null;
-
-            // Set a successful connection indicator
-            marketsList = [{
-                MarketID: "BTC-PERP-Q1",
-                Title: "BTC Perpetual Futures (Connected & Simulated)",
-                OddsYes: 0.55, 
-                OddsNo: 0.45,
-                CurrentPrice: 60000, 
-                Timestamp: Date.now()
-            }];
+            data.forEach((result, index) => {
+                const walletAddress = TRACKED_WALLET_ADDRESSES[index];
+                
+                if (result.result && result.result.assetPositions) {
+                    const walletPositions = result.result.assetPositions.filter(p => p.data.szi !== "0");
+                    
+                    walletPositions.forEach(pos => {
+                        const mappedPos = mapHyperliquidPosition(pos, btcPrice, ethPrice, walletAddress);
+                        if (mappedPos) {
+                            openPositions.push(mappedPos);
+                        }
+                    });
+                }
+            });
         }
         
-        // --- 4. Construct Data with Simulation ---
-        
-        // Since 'meta' doesn't give prices, we use dynamic simulation
-        const btcPrice = 60000 + Math.sin(Date.now() / 10000000) * 1000; 
-        const ethPrice = 3500 + Math.cos(Date.now() / 10000000) * 100;
-        
-        const formattedBtcPrice = parseFloat(btcPrice.toFixed(2));
-        const formattedEthPrice = parseFloat(ethPrice.toFixed(2));
-        
-        // Use the simulated prices for the final output
-        const markets = marketsList.length > 0 ? marketsList.map(m => ({ ...m, CurrentPrice: formattedBtcPrice })) : [
-            {
-                MarketID: "BTC-PERP-Q1",
-                Title: "BTC Perpetual Futures (Simulated)",
-                OddsYes: 0.55, 
-                OddsNo: 0.45,
-                CurrentPrice: formattedBtcPrice,
-                Timestamp: Date.now()
-            }
-        ];
-        
-        // Simulated Open Positions
-        const openPositions = [
-            {
-                Asset: "BTC",
-                Side: "Long",
-                SizeUSD: 5000,
-                EntryPrice: 58500.25,
-                CurrentPrice: formattedBtcPrice,
-                LiquidationPrice: 55000.00,
-                // Calculate PnL based on the current price
-                UnrealizedPnL: (formattedBtcPrice - 58500.25) * (5000 / 58500.25)
-            },
-            {
-                Asset: "ETH",
-                Side: "Short",
-                SizeUSD: 2500,
-                EntryPrice: 3800.00,
-                CurrentPrice: formattedEthPrice,
-                LiquidationPrice: 4100.00,
-                // Calculate PnL based on the current price
-                UnrealizedPnL: (3800.00 - formattedEthPrice) * (2500 / 3800.00)
-            }
-        ];
-
-        // --- 5. Return Success Response ---
-        
-        res.status(200).json({
-            markets: markets,
-            openPositions: openPositions
-        });
-
     } catch (error) {
-        console.error("Serverless Function Execution Error (Catch Block):", error.message);
-        
-        // --- 6. Return generic 500 Internal Server Error for unhandled exceptions ---
-        res.status(500).json({
-            error: "Internal Server Error during execution.",
-            details: error.message
+        // Handle network errors (e.g., DNS failure, timeout)
+        console.error("Network error fetching Hyperliquid data:", error.message);
+        fetchError = { error: "Network or proxy connection failed.", details: error.message };
+    }
+
+    // --- 3. Construct Final Response ---
+    
+    const formattedBtcPrice = parseFloat(btcPrice.toFixed(2));
+    
+    // Prediction Market Data (uses simulated price)
+    const markets = [
+        {
+            MarketID: "BTC-PERP-Q1",
+            Title: "BTC Perpetual Futures (Simulated Price)",
+            OddsYes: 0.55, 
+            OddsNo: 0.45,
+            CurrentPrice: formattedBtcPrice,
+            Timestamp: Date.now()
+        }
+    ];
+
+    if (fetchError) {
+        // If an error occurred, return a 502 to the frontend, but include the fallback structure.
+        return res.status(502).json({ 
+            ...fetchError,
+            markets: markets,
+            openPositions: [{ Wallet: "API_ERROR", Asset: "FAIL", Side: fetchError.status.toString(), SizeUSD: 0, EntryPrice: 0, CurrentPrice: 0, LiquidationPrice: 0, UnrealizedPnL: 0 }] 
         });
     }
+    
+    // Return Success Response (200 OK)
+    // The front-end will now receive a consolidated list of ALL open positions across all tracked wallets.
+    res.status(200).json({
+        markets: markets,
+        openPositions: openPositions
+    });
 };
