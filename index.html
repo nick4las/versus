@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyper-Predict Static Data App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #0d1117; color: #c9d1d9; }
+        .card { background-color: #161b22; border: 1px solid #30363d; }
+        .btn-primary { background-color: #238636; color: white; transition: background-color 0.15s; }
+        .btn-primary:hover { background-color: #2ea043; }
+        .btn-secondary { background-color: #30363d; color: #c9d1d9; transition: background-color 0.15s; }
+        .btn-secondary:hover { background-color: #484f58; }
+        .pnl-positive { color: #238636; font-weight: bold; }
+        .pnl-negative { color: #da3633; font-weight: bold; }
+        .input-field { background-color: #0d1117; border-color: #30363d; color: #c9d1d9; }
+        .scrollable-feed { max-height: 400px; overflow-y: auto; }
+        .loading-spinner { border: 4px solid rgba(255, 255, 255, 0.1); border-top-color: #238636; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .table-header { color: #8b949e; }
+        .table-row-green:hover { background-color: rgba(35, 134, 54, 0.1); }
+        .table-row-red:hover { background-color: rgba(218, 54, 51, 0.1); }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <!-- Dependencies for Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Firestore requires 'Debug' logging enabled for proper functioning in this environment
+        setLogLevel('Debug');
+
+        // Global variables provided by the canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'hyper-predict-web3-app';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth;
+        let userId = null;
+        let isAuthReady = false;
+        
+        // --- STATIC MOCK DATA (Replaces dynamic API calls) ---
+        const MOCK_DATA = {
+            markets: [
+                {
+                    MarketID: "BTC-Q324-PEAK",
+                    Title: "BTC to reach $100,000 before Q4 2024",
+                    CurrentPrice: 65200.50,
+                    OddsYes: 0.35,
+                    OddsNo: 0.65
+                }
+            ],
+            openPositions: [
+                {
+                    Asset: "BTC",
+                    Side: "Long",
+                    SizeUSD: 10000.00,
+                    EntryPrice: 62500.00,
+                    CurrentPrice: 65200.50,
+                    LiquidationPrice: 59800.00,
+                    Margin: 500.00,
+                    UnrealizedPnL: 432.08
+                },
+                {
+                    Asset: "ETH",
+                    Side: "Short",
+                    SizeUSD: 5000.00,
+                    EntryPrice: 3800.00,
+                    CurrentPrice: 3550.90,
+                    LiquidationPrice: 4050.00,
+                    Margin: 250.00,
+                    UnrealizedPnL: 324.50
+                },
+                {
+                    Asset: "SOL",
+                    Side: "Long",
+                    SizeUSD: 2500.00,
+                    EntryPrice: 155.20,
+                    CurrentPrice: 151.00,
+                    LiquidationPrice: 140.50,
+                    Margin: 125.00,
+                    UnrealizedPnL: -83.65
+                }
+            ]
+        };
+
+        const STATE = {
+            mainMarket: null,
+            openPositions: [],
+            userWagers: {},
+            isDataLoading: true
+        };
+
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+
+        // 1. Authentication Setup
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+            } else {
+                try {
+                    // Sign in anonymously if no token or previous session exists
+                    const anonymousUser = await signInAnonymously(auth);
+                    userId = anonymousUser.user.uid;
+                } catch (error) {
+                    console.error("Anonymous sign-in failed:", error);
+                }
+            }
+            isAuthReady = true;
+            document.getElementById('user-id-display').textContent = userId || 'N/A';
+            console.log("Auth State Changed. User ID:", userId, "Ready:", isAuthReady);
+
+            // Once authenticated, load user-specific data
+            if (userId) {
+                loadUserWagers();
+            }
+        });
+
+        // Use custom token if provided, otherwise rely on onAuthStateChanged's anonymous fallback
+        if (initialAuthToken) {
+            signInWithCustomToken(auth, initialAuthToken).catch(error => {
+                console.error("Custom token sign-in failed:", error);
+            });
+        }
+
+
+        // 2. Firestore Utility Functions (Wagers)
+        const getUserWagersRef = (uid) => doc(db, `/artifacts/${appId}/users/${uid}/wagers/current`);
+
+        const loadUserWagers = () => {
+            if (!db || !userId) return;
+
+            const userRef = getUserWagersRef(userId);
+
+            onSnapshot(userRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    STATE.userWagers = docSnap.data().wagers || {};
+                    console.log("Wagers loaded:", STATE.userWagers);
+                } else {
+                    STATE.userWagers = {};
+                    console.log("No wagers found. Initializing.");
+                }
+                renderUserWagers();
+            }, (error) => {
+                console.error("Error setting up wager snapshot listener:", error);
+            });
+        };
+
+        const saveWager = async (marketId, outcome, amount) => {
+            if (!db || !userId) return;
+
+            const userRef = getUserWagersRef(userId);
+            const wagerKey = `${marketId}_${outcome}`;
+
+            try {
+                // If the document doesn't exist, create it with the initial wager object
+                await setDoc(userRef, {
+                    wagers: {
+                        ...STATE.userWagers,
+                        [wagerKey]: (STATE.userWagers[wagerKey] || 0) + amount
+                    }
+                }, { merge: true });
+
+                showModal(`Wager Placed!`, `You successfully wagered $${amount.toFixed(2)} on ${outcome} for market ${marketId}.`);
+
+            } catch (e) {
+                console.error("Error saving wager: ", e);
+                showModal(`Wager Failed`, `Could not save your wager. Please try again. Error: ${e.message}`);
+            }
+        };
+
+        // 3. Static Data Loading (Replaces fetchTradingData)
+
+        /**
+         * Loads static mock data instantly and updates the state.
+         * This function replaces the previous Gemini API call.
+         */
+        const loadStaticTradingData = () => {
+            STATE.isDataLoading = true;
+            renderTradingData(); 
+            
+            // Simulate a very short loading delay for UX consistency
+            setTimeout(() => {
+                if (MOCK_DATA.markets.length > 0) {
+                    STATE.mainMarket = MOCK_DATA.markets[0];
+                }
+                STATE.openPositions = MOCK_DATA.openPositions;
+                
+                STATE.isDataLoading = false;
+                renderTradingData();
+                console.log("Static Trading Data loaded.");
+            }, 300); 
+        };
+
+        // 4. UI Formatting and Rendering Functions
+        
+        const formatOdds = (odds) => (odds * 100).toFixed(1) + '%';
+        const formatPrice = (price) => `$${price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const formatPnL = (pnl) => {
+            const val = pnl.toFixed(2);
+            return pnl >= 0 ? `+${val}` : val;
+        };
+
+        const renderUserWagers = () => {
+            const wagersContainer = document.getElementById('user-wagers');
+            if (!wagersContainer) return;
+
+            const wagerHtml = Object.entries(STATE.userWagers)
+                .filter(([, amount]) => amount > 0)
+                .map(([key, amount]) => {
+                    const [marketId, outcome] = key.split('_');
+                    return `
+                        <div class="flex justify-between items-center py-2 border-b border-[#30363d] text-sm">
+                            <span class="font-semibold text-white">${marketId} - ${outcome}</span>
+                            <span class="text-green-400">$${amount.toFixed(2)}</span>
+                        </div>
+                    `;
+                }).join('');
+
+            wagersContainer.innerHTML = wagerHtml || `<p class="text-gray-500 italic p-4 text-center">No open wagers yet.</p>`;
+        };
+
+        const renderOpenPositions = () => {
+            const positionsContainer = document.getElementById('open-positions-container');
+            if (!positionsContainer) return;
+
+            if (STATE.openPositions.length === 0) {
+                positionsContainer.innerHTML = `<p class="text-gray-500 italic p-4 text-center card mt-4 rounded-xl">No open Hyperliquid positions found for this wallet.</p>`;
+                return;
+            }
+
+            const rows = STATE.openPositions.map(pos => {
+                const isLong = pos.Side === 'Long';
+                const pnlClass = pos.UnrealizedPnL >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const rowClass = pos.UnrealizedPnL >= 0 ? 'table-row-green' : 'table-row-red';
+
+                return `
+                    <tr class="border-b border-[#30363d] text-sm cursor-pointer ${rowClass}">
+                        <td class="px-2 py-3 font-semibold">${pos.Asset}</td>
+                        <td class="px-2 py-3 ${isLong ? 'text-green-400' : 'text-red-400'}">${pos.Side}</td>
+                        <td class="px-2 py-3">${formatPrice(pos.SizeUSD)}</td>
+                        <td class="px-2 py-3 font-mono">${formatPrice(pos.EntryPrice)}</td>
+                        <td class="px-2 py-3 font-mono">${formatPrice(pos.CurrentPrice)}</td>
+                        <td class="px-2 py-3 font-mono">${formatPrice(pos.LiquidationPrice)}</td>
+                        <td class="px-2 py-3 ${pnlClass}">${formatPnL(pos.UnrealizedPnL)}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            positionsContainer.innerHTML = `
+                <div class="scrollable-feed overflow-x-auto">
+                    <table class="min-w-full divide-y divide-[#30363d] text-left">
+                        <thead>
+                            <tr class="table-header text-xs uppercase tracking-wider">
+                                <th class="px-2 py-2">Asset</th>
+                                <th class="px-2 py-2">Side</th>
+                                <th class="px-2 py-2">Size (USD)</th>
+                                <th class="px-2 py-2">Entry Price</th>
+                                <th class="px-2 py-2">Mark Price</th>
+                                <th class="px-2 py-2">Liq. Price</th>
+                                <th class="px-2 py-2">PnL (USD)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[#30363d]">
+                            ${rows}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        };
+
+        const renderMarketCard = (market, isMain = false) => {
+            if (!market) return '';
+
+            const marketHtml = `
+                <div class="card p-6 rounded-xl shadow-lg mb-6">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h2 class="text-xl md:text-2xl font-bold text-white mb-1">${market.Title}</h2>
+                            <p class="text-sm text-gray-400">Current Price (Static): <span class="font-mono text-base text-white">${formatPrice(market.CurrentPrice)}</span></p>
+                        </div>
+                        <span class="text-xs font-mono text-gray-500">Market ID: ${market.MarketID}</span>
+                    </div>
+
+                    <div class="mt-4 grid grid-cols-2 gap-4">
+                        <!-- YES Pool -->
+                        <div class="bg-[#0d1117] p-3 rounded-lg border border-green-700/50">
+                            <p class="text-sm font-medium text-gray-300">YES Odds</p>
+                            <p class="text-2xl font-extrabold text-green-400">${formatOdds(market.OddsYes)}</p>
+                            <button onclick="window.wagerModal('${market.MarketID}', 'YES', ${market.OddsYes}, ${market.CurrentPrice})" class="mt-2 w-full btn-primary text-sm py-1.5 rounded-lg">Wager YES</button>
+                        </div>
+                        <!-- NO Pool -->
+                        <div class="bg-[#0d1117] p-3 rounded-lg border border-red-700/50">
+                            <p class="text-sm font-medium text-gray-300">NO Odds</p>
+                            <p class="text-2xl font-extrabold text-red-400">${formatOdds(market.OddsNo)}</p>
+                            <button onclick="window.wagerModal('${market.MarketID}', 'NO', ${market.OddsNo}, ${market.CurrentPrice})" class="mt-2 w-full btn-secondary text-sm py-1.5 rounded-lg">Wager NO</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            return marketHtml;
+        };
+
+        const renderTradingData = () => {
+            const mainMarketContainer = document.getElementById('main-market-container');
+            const dataErrorElement = document.getElementById('data-error');
+
+            if (STATE.isDataLoading) {
+                const loadingHtml = `
+                    <div class="flex flex-col items-center justify-center p-12 card rounded-xl lg:col-span-2">
+                        <div class="loading-spinner mb-4"></div>
+                        <p class="text-lg font-semibold text-gray-400">Loading Static Hyperliquid Data Mock...</p>
+                        <p class="text-sm text-gray-500">Loading local mock data to bypass network restrictions.</p>
+                    </div>
+                `;
+                if (mainMarketContainer) mainMarketContainer.innerHTML = loadingHtml;
+                if (dataErrorElement) dataErrorElement.textContent = '';
+                return;
+            }
+
+            // Clear loading and error states
+            if (dataErrorElement) dataErrorElement.textContent = '';
+
+            // Render main market
+            if (mainMarketContainer) mainMarketContainer.innerHTML = renderMarketCard(STATE.mainMarket, true);
+            
+            // Render open positions
+            renderOpenPositions();
+        };
+
+        const renderGroundingSources = (sources) => {
+             // Removed source display as Gemini is no longer used.
+             const sourcesContainer = document.getElementById('grounding-sources');
+             if (sourcesContainer) sourcesContainer.innerHTML = '<p class="text-xs text-gray-600 mt-4">Data is static mock data, not live.</p>';
+        }
+
+
+        // 5. Modal and Interaction Logic (Wagers)
+
+        window.wagerModal = (marketId, outcome, odds, currentPrice) => {
+            // Find the market title from the state
+            const marketTitle = STATE.mainMarket && STATE.mainMarket.MarketID === marketId ? STATE.mainMarket.Title : 'Prediction Market';
+
+            const modal = document.getElementById('wager-modal');
+            
+            document.getElementById('modal-market-id').textContent = marketId;
+            document.getElementById('modal-market-title').textContent = marketTitle;
+            document.getElementById('modal-outcome').textContent = outcome;
+            document.getElementById('modal-odds').textContent = formatOdds(odds);
+            document.getElementById('modal-current-price').textContent = formatPrice(currentPrice);
+            document.getElementById('wager-amount').value = '10.00'; // Default amount
+            
+            // Set up the confirmation button action
+            const confirmBtn = document.getElementById('confirm-wager-btn');
+            confirmBtn.onclick = () => {
+                const amountInput = document.getElementById('wager-amount');
+                const amount = parseFloat(amountInput.value);
+                if (isNaN(amount) || amount <= 0) {
+                    showModal('Error', 'Please enter a valid wager amount greater than zero.');
+                    return;
+                }
+                saveWager(marketId, outcome, amount);
+                modal.classList.add('hidden');
+            };
+
+            modal.classList.remove('hidden');
+        };
+
+        window.closeModal = (id) => {
+            document.getElementById(id).classList.add('hidden');
+        };
+
+        const showModal = (title, message) => {
+            const messageModal = document.getElementById('message-modal');
+            document.getElementById('message-title').textContent = title;
+            document.getElementById('message-body').textContent = message;
+            messageModal.classList.remove('hidden');
+        };
+
+        // 6. Initialization
+        window.onload = function() {
+            // Initiate the data load when the page loads
+            loadStaticTradingData();
+
+            // Set up a refresh button listener to reload the static data
+            document.getElementById('refresh-btn').addEventListener('click', loadStaticTradingData);
+        };
+
+        // Export functions to global scope for HTML event handlers
+        window.wagerModal = window.wagerModal; // Re-export for clarity
+    </script>
+
+    <!-- Main Application Layout -->
+    <div class="max-w-6xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-green-400">Hyper-Predict <span class="text-white">Static Data Mock</span></h1>
+            <p class="text-gray-400 mt-2">Displaying Hyperliquid-style Open Positions using local mock data.</p>
+            <p class="text-gray-500 text-xs mt-1">Wallet (Simulated): <span id="user-id-display" class="font-mono">Loading...</span></p>
+        </header>
+
+        <!-- Data Refresh & Status -->
+        <div class="flex justify-between items-center mb-4">
+            <button id="refresh-btn" class="btn-primary flex items-center px-4 py-2 rounded-lg text-sm">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0110.803 6.096 1.5 1.5 0 001.523 1.346c.866-.192 1.532-1.168 1.532-2.147A9 9 0 103 9a1 1 0 01-2 0 11 11 0 011.08-4.707 1 1 0 01.442-.442A11 11 0 019 1h1a1 1 0 110 2H9c-3.133 0-6.095 1.252-8.239 3.396a1 1 0 01-1.414-1.414A9 9 0 0110 0a10 10 0 019 10 10 10 0 01-10 10 10 10 0 01-10-10 1 1 0 012 0 8 8 0 0014 0 8 8 0 00-8-8z" clip-rule="evenodd" />
+                </svg>
+                Reload Static Data
+            </button>
+            <p id="data-error" class="text-red-400 text-sm"></p>
+        </div>
+        
+        <!-- Open Positions Dashboard -->
+        <div class="mb-8">
+            <h2 class="text-2xl font-semibold mb-4 text-white">Simulated Open Positions (Hyperliquid)</h2>
+            <div class="card p-4 rounded-xl shadow-lg">
+                <div id="open-positions-container">
+                    <!-- Dynamic Positions Table Loaded Here -->
+                    <p class="text-gray-500 italic p-4 text-center">Loading open positions...</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Main Market (Column 1 & 2) -->
+            <div class="lg:col-span-2">
+                <h2 class="text-2xl font-semibold mb-4 text-white">Featured Prediction Market (Static)</h2>
+                <div id="main-market-container">
+                    <!-- Dynamic Content Loaded Here -->
+                </div>
+            </div>
+
+            <!-- User Wagers (Column 3) -->
+            <div class="lg:col-span-1">
+                <div class="card p-4 rounded-xl shadow-lg h-full">
+                    <h2 class="text-xl font-semibold mb-4 text-white">Your Prediction Wagers</h2>
+                    <div id="user-wagers" class="scrollable-feed">
+                        <p class="text-gray-500 italic p-4 text-center">Loading wagers...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Grounding Sources -->
+        <div id="grounding-sources" class="mt-8 p-4 text-center card rounded-xl">
+             <p class="text-xs text-gray-600 mt-4">Data is static mock data, not live.</p>
+        </div>
+    </div>
+
+    <!-- Wager Modal -->
+    <div id="wager-modal" class="fixed inset-0 bg-black bg-opacity-70 hidden flex items-center justify-center p-4 z-50">
+        <div class="card p-6 rounded-xl w-full max-w-md shadow-2xl">
+            <h3 class="text-2xl font-bold mb-2 text-white">Confirm Wager</h3>
+            <p class="text-gray-400 text-sm mb-4" id="modal-market-title">Market Title</p>
+
+            <div class="space-y-3 mb-6 text-sm">
+                <div class="flex justify-between">
+                    <span class="text-gray-300">Market ID:</span>
+                    <span class="font-mono text-white" id="modal-market-id"></span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-300">Current Price:</span>
+                    <span class="font-semibold text-white" id="modal-current-price"></span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-300">Your Outcome:</span>
+                    <span class="font-bold text-lg text-green-400" id="modal-outcome"></span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-300">Current Odds:</span>
+                    <span class="font-bold text-white" id="modal-odds"></span>
+                </div>
+            </div>
+
+            <label for="wager-amount" class="block text-sm font-medium text-gray-300 mb-2">Wager Amount (USD)</label>
+            <input type="number" id="wager-amount" value="10.00" min="0.01" step="0.01" class="w-full input-field p-3 rounded-lg border focus:ring-green-500 focus:border-green-500 mb-6">
+            
+            <div class="flex justify-end space-x-3">
+                <button onclick="window.closeModal('wager-modal')" class="btn-secondary px-4 py-2 rounded-lg">Cancel</button>
+                <button id="confirm-wager-btn" class="btn-primary px-4 py-2 rounded-lg">Confirm Wager</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message Modal -->
+    <div id="message-modal" class="fixed inset-0 bg-black bg-opacity-70 hidden flex items-center justify-center p-4 z-50">
+        <div class="card p-6 rounded-xl w-full max-w-sm shadow-2xl">
+            <h3 class="text-2xl font-bold mb-3 text-green-400" id="message-title">Success!</h3>
+            <p class="text-gray-300 mb-6" id="message-body">Wager placed successfully.</p>
+            <div class="flex justify-end">
+                <button onclick="window.closeModal('message-modal')" class="btn-primary px-4 py-2 rounded-lg">Close</button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
