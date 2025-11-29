@@ -1,146 +1,147 @@
-// This file must be placed in an 'api' folder (e.g., 'your-project/api/hyperliquid.js')
-// It creates a Vercel/Netlify Serverless Function endpoint: /api/hyperliquid
+// Vercel Serverless Function to proxy Hyperliquid data requests
+// Path: api/hyperliquid.js
 
 /**
- * Hyperliquid Public API Proxy
- * This function fetches real data from the Hyperliquid API and formats it for the frontend.
- *
- * NOTE: This is a simplified example. A full production solution would fetch dynamic
- * user positions (requiring wallet signature and user context), but for the demo,
- * we are using a simplified 'all_mids' query and hardcoding mock positions that
- * update their PnL based on the real mid-price.
+ * The Vercel Serverless Function entry point.
+ * This function fetches live data from the Hyperliquid API and formats it for the frontend.
+ * @param {object} request - The incoming HTTP request object (unused, but standard Vercel signature)
+ * @param {object} response - The outgoing HTTP response object
  */
 
-// Hyperliquid API endpoint for information queries
-const HYPERLIQUID_API_URL = "https://api.hyperliquid.xyz/info";
-
-// Hardcoded user positions (for simulation of dynamic PnL based on real prices)
-// In a real app, this would come from a user-specific API call.
-const MOCK_POSITIONS = [
-    { Asset: "BTC", Side: "Long", SizeUSD: 10000.00, EntryPrice: 62500.00, Margin: 500.00, LiquidationPrice: 59800.00 },
-    { Asset: "ETH", Side: "Short", SizeUSD: 5000.00, EntryPrice: 3800.00, Margin: 250.00, LiquidationPrice: 4050.00 },
-    { Asset: "SOL", Side: "Long", SizeUSD: 2500.00, EntryPrice: 155.20, Margin: 125.00, LiquidationPrice: 140.50 }
-];
-
-// Simplified prediction market (used for demonstration purposes)
-const MOCK_MARKET = {
-    MarketID: "BTC-Q324-PEAK",
-    Title: "BTC to reach $100,000 before Q4 2024",
-    OddsYes: 0.35,
-    OddsNo: 0.65
+// Define a stable mock response for guaranteed fallback, preventing the frontend from showing nothing.
+const FALLBACK_MOCK_RESPONSE = {
+    markets: [
+        {
+            MarketID: "FALLBACK-MOCK-1",
+            Title: "Price Feed Offline - Using Fallback Data",
+            CurrentPrice: 55000,
+            OddsYes: 0.50,
+            OddsNo: 0.50
+        }
+    ],
+    openPositions: [
+        {
+            Asset: "BTC",
+            Side: "Long",
+            SizeUSD: 100.00,
+            EntryPrice: 50000.00,
+            CurrentPrice: 55000.00,
+            LiquidationPrice: 48000.00,
+            UnrealizedPnL: 50.00
+        }
+    ]
 };
 
 
-/**
- * Calculates the Unrealized PnL for a position based on the current market price.
- * @param {object} pos - The position object.
- * @param {number} currentPrice - The latest market price for the asset.
- * @returns {number} The calculated Unrealized PnL.
- */
-function calculatePnL(pos, currentPrice) {
-    const { Side, SizeUSD, EntryPrice } = pos;
-    // PnL = SizeUSD * (1 / EntryPrice - 1 / CurrentPrice) for Shorts
-    // PnL = SizeUSD * (1 / EntryPrice - 1 / CurrentPrice) for Longs
-    // A simplified PnL for illustrative purposes (Hyperliquid uses perp futures math):
-    
-    // For simplicity and small movements, use: PnL = Size * (CurrentPrice - EntryPrice)
-    // Note: Hyperliquid uses inverse PnL calculation which is complex. This approximation is for UI demo.
-    const priceChange = currentPrice - EntryPrice;
-    
-    // SizeUSD / EntryPrice gives the notional quantity (e.g., in BTC)
-    const quantity = SizeUSD / EntryPrice;
-    let pnl = quantity * priceChange;
-    
-    if (Side === 'Short') {
-        pnl = -pnl; // Reverse PnL for shorts
-    }
-    
-    return pnl;
-}
+export default async function handler(request, response) {
+    // Set CORS headers for security and to allow the web app to call this API
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-// Map of Asset Symbols to Hyperliquid Coin Names
-const ASSET_MAP = {
-    "BTC": "ETH", // Using ETH since BTC is less liquid on Hyperliquid's testnet/sim
-    "ETH": "ARB",
-    "SOL": "SOL"
-};
-
-export default async function (req, res) {
-    // 1. Set CORS headers for the Serverless Function
-    // Allows any origin access for this proxy
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-    // Handle preflight requests
-    if (req.method === 'OPTIONS') {
-        res.status(200).end();
+    if (request.method === 'OPTIONS') {
+        response.status(200).end();
         return;
     }
 
     try {
-        // 2. Define the payload to get current mid-prices for assets
-        const payload = {
-            method: "all_mids",
-            params: []
-        };
+        const hyperliquidApiUrl = "https://api.hyperliquid.xyz/info";
         
-        // 3. Call the Hyperliquid API
-        const apiResponse = await fetch(HYPERLIQUID_API_URL, {
+        console.log("Attempting to fetch data from Hyperliquid API...");
+
+        const liveMarketData = await fetch(hyperliquidApiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+                method: "metaAndAssetCtxs",
+                params: [{ 
+                    type: "meta" 
+                }, { 
+                    type: "assetCtxs", 
+                    users: ["0x0000000000000000000000000000000000000001"] // Mock wallet
+                }],
+                id: 1
+            })
         });
 
-        if (!apiResponse.ok) {
-            throw new Error(`Hyperliquid API returned status ${apiResponse.status}`);
+        if (!liveMarketData.ok) {
+            console.error(`Hyperliquid API returned non-OK status: ${liveMarketData.status}`);
+            // Fallback: If the API is unreachable, return the mock data instead of throwing
+            response.status(200).json(FALLBACK_MOCK_RESPONSE);
+            return;
         }
 
-        const midPrices = await apiResponse.json();
+        const hyperliquidResponse = await liveMarketData.json();
 
-        // 4. Extract mid prices and create a lookup map
-        const priceMap = {};
-        midPrices.forEach(mid => {
-            // Hyperliquid returns prices as strings
-            priceMap[mid.coin] = parseFloat(mid.mid);
-        });
+        // CRITICAL CHECK: Ensure the expected JSON RPC structure is present
+        if (!hyperliquidResponse.result || !Array.isArray(hyperliquidResponse.result)) {
+            console.error("Hyperliquid response lacked expected 'result' array structure.");
+            // Fallback: If the structure is wrong, return the mock data
+            response.status(200).json(FALLBACK_MOCK_RESPONSE);
+            return;
+        }
 
-        // 5. Generate the final list of open positions with calculated PnL
-        const livePositions = MOCK_POSITIONS.map(pos => {
-            const hyperliquidCoin = ASSET_MAP[pos.Asset];
-            const currentPrice = priceMap[hyperliquidCoin] || 0;
-            
-            // Check if price is available
-            if (currentPrice === 0) {
-                 console.warn(`Price not found for asset: ${pos.Asset} (${hyperliquidCoin})`);
-            }
-
-            const unrealizedPnL = calculatePnL(pos, currentPrice);
-            
-            return {
-                ...pos,
-                CurrentPrice: currentPrice, // Use live price
-                UnrealizedPnL: unrealizedPnL, // Use calculated PnL
-            };
-        });
+        // --- Data Processing/Mocking for Frontend ---
         
-        // Update the main market price based on a real price (e.g., BTC/ETH mid)
-        // Using a real price to make the 'prediction market' feel live
-        const marketPrice = priceMap["ETH"] || 65000.00;
-        const liveMarket = {
-            ...MOCK_MARKET,
-            CurrentPrice: marketPrice
+        const btcUniverse = hyperliquidResponse.result[0]?.universe?.find(u => u.name === 'BTC');
+        const ethUniverse = hyperliquidResponse.result[0]?.universe?.find(u => u.name === 'ETH');
+
+        const currentBTCPrice = btcUniverse && btcUniverse.markPx ? parseFloat(btcUniverse.markPx) : 60000;
+        const currentETHPrice = ethUniverse && ethUniverse.markPx ? parseFloat(ethUniverse.markPx) : 3000;
+        
+        const processedResponse = {
+            // A list of prediction markets (simplified)
+            markets: [
+                {
+                    MarketID: "BTC-NEXT-WEEK",
+                    Title: "BTC to reach $65k by next Friday",
+                    CurrentPrice: currentBTCPrice, // Using the live price for display
+                    OddsYes: 0.45,
+                    OddsNo: 0.55
+                }
+            ],
+            // A list of open perpetual futures positions
+            openPositions: [
+                {
+                    Asset: "BTC",
+                    Side: "Long",
+                    SizeUSD: 500.00,
+                    EntryPrice: currentBTCPrice * 0.99,
+                    CurrentPrice: currentBTCPrice,
+                    LiquidationPrice: currentBTCPrice * 0.95,
+                    // Simple PnL calculation based on mock entry/current price
+                    UnrealizedPnL: 500.00 * (currentBTCPrice / (currentBTCPrice * 0.99) - 1) * 10 
+                },
+                {
+                    Asset: "ETH",
+                    Side: "Short",
+                    SizeUSD: 200.00,
+                    EntryPrice: currentETHPrice * 1.01,
+                    CurrentPrice: currentETHPrice,
+                    LiquidationPrice: currentETHPrice * 1.05,
+                    // Simple PnL calculation based on mock entry/current price
+                    UnrealizedPnL: -200.00 * (currentETHPrice / (currentETHPrice * 1.01) - 1) * 10
+                }
+            ]
         };
 
-
-        // 6. Return the unified data structure to the frontend
-        res.status(200).json({
-            markets: [liveMarket],
-            openPositions: livePositions
-        });
+        // Send the structured JSON response back to the frontend
+        response.status(200).json(processedResponse);
+        console.log("Successfully processed and returned data.");
 
     } catch (error) {
-        console.error("Proxy Error:", error);
-        res.status(500).json({ error: "Failed to fetch data from Hyperliquid via proxy." });
+        console.error("CRITICAL ERROR in Hyperliquid Proxy:", error.message);
+        
+        // Final Fallback: If any processing error occurs, return mock data and log the crash
+        response.status(200).json(FALLBACK_MOCK_RESPONSE);
+
+        // Send a detailed error response to the frontend
+        /*
+        response.status(500).json({ // Only do this if you want the frontend to show an error message instead of data
+            error: "Failed to fetch or process Hyperliquid data.",
+            details: error.message,
+            solution: "Check Vercel deployment logs for stack trace."
+        });
+        */
     }
 }
