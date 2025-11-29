@@ -42,18 +42,35 @@ module.exports = async (req, res) => {
         });
 
         if (!apiResponse.ok) {
-            const apiErrorBody = await apiResponse.json();
-            console.error(`CRITICAL ERROR: Hyperliquid API failed with status ${apiResponse.status}:`, apiErrorBody);
+            let errorDetails = {};
+            
+            // CRITICAL FIX: Safely attempt to parse the error body.
+            // If the Hyperliquid API sends a non-JSON error (e.g., plain text), 
+            // the .json() call will crash. We catch that error and read it as text.
+            try {
+                // Attempt to read as JSON
+                errorDetails = await apiResponse.json();
+            } catch (jsonError) {
+                // Fallback to reading as plain text
+                const textBody = await apiResponse.text();
+                errorDetails = { 
+                    message: "Non-JSON response body received from Hyperliquid.", 
+                    raw_response: textBody 
+                };
+            }
+
+            console.error(`CRITICAL ERROR: Hyperliquid API failed with status ${apiResponse.status}:`, errorDetails);
             
             // Return a 502 Bad Gateway if the upstream API fails
             res.status(502).json({
                 error: "Failed to fetch data from Hyperliquid API",
                 status: apiResponse.status,
-                details: apiErrorBody.error || "Upstream API returned an error."
+                details: errorDetails.raw_response || errorDetails.message || "Upstream API returned an unparsable error."
             });
             return;
         }
 
+        // Response is OK (status 200-299), proceed to parse the expected JSON data
         const data = await apiResponse.json();
         const assetPrices = {};
 
