@@ -25,10 +25,10 @@ module.exports = async (req, res) => {
     try {
         // --- 1. Define the external API endpoint and Request Payload (JSON-RPC) ---
         
-        // SWITCHED to the simplest method ("meta") and changing params from array [] to object {}
+        // REVERTING to the expected empty array for 'params' for the "meta" method.
         const exchangeRequestPayload = {
             method: "meta",
-            params: {}, // Using an empty object instead of an empty array
+            params: [], // Using an empty array instead of an empty object
             id: 1,
             jsonrpc: "2.0"
         };
